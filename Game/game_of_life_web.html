@@ -1,0 +1,721 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Conway's Game of Life</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700&family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+/* Layout : application plein ecran. En-tete compact (nom + compteurs), culture
+   de cellules bord a bord au centre, barre de commandes tactile en bas.
+   Un seul univers visuel, sombre, comme un champ de microscope. */
+:root {
+  color-scheme: dark;
+  --encre: #0e1320;      /* fond de la culture */
+  --panneau: #171e2e;    /* barres et feuilles */
+  --trait: #29334a;      /* quadrillage, bordures */
+  --texte: #e8ebf2;
+  --sourdine: #8d98b0;
+  --cellule: #ffcf5c;    /* cellules vivantes */
+  --actif: #62c9ff;      /* commande active */
+  --titre: "Bricolage Grotesque", "Trebuchet MS", system-ui, sans-serif;
+  --donnee: "JetBrains Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
+}
+html, body { height: 100%; }
+body { margin: 0; }
+[hidden] { display: none !important; }
+body {
+  background: var(--encre); color: var(--texte);
+  font-family: var(--titre); font-size: 15px;
+  display: flex; flex-direction: column; overflow: hidden;
+}
+header {
+  display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 20px;
+  padding: 10px 16px; background: var(--panneau); border-bottom: 1px solid var(--trait);
+}
+h1 { margin: 0; font-size: 19px; font-weight: 700; letter-spacing: -0.01em; }
+h1 small { font-family: var(--donnee); font-size: 12px; font-weight: 400; color: var(--sourdine); margin-left: 8px; }
+.compteurs { display: flex; gap: 18px; margin-left: auto; font-family: var(--donnee); font-size: 13px; font-variant-numeric: tabular-nums; color: var(--sourdine); }
+.compteurs b { color: var(--texte); font-weight: 600; }
+.culture { position: relative; flex: 1; min-height: 0; }
+#toile { position: absolute; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; cursor: crosshair; }
+.astuce, .annonce {
+  position: absolute; left: 16px; right: 16px; pointer-events: none;
+  font-family: var(--donnee); font-size: 12px; color: var(--sourdine);
+}
+.astuce { bottom: 10px; }
+.astuce .tactile { display: none; }
+@media (pointer: coarse) { .astuce .souris { display: none; } .astuce .tactile { display: inline; } }
+.annonce { top: 12px; display: flex; justify-content: center; }
+.annonce span { background: var(--cellule); color: var(--encre); font-family: var(--titre); font-weight: 700; font-size: 14px; padding: 8px 14px; border-radius: 999px; }
+.commandes {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+  padding: 10px 16px calc(10px + env(safe-area-inset-bottom, 0px));
+  background: var(--panneau); border-top: 1px solid var(--trait);
+}
+button, .vitesse {
+  font: 500 14px var(--titre); color: var(--texte);
+  background: var(--encre); border: 1px solid var(--trait); border-radius: 8px;
+  min-height: 40px; padding: 0 12px;
+}
+button { cursor: pointer; }
+button:hover { border-color: var(--sourdine); }
+button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px solid var(--actif); outline-offset: 2px; }
+button.principal { background: var(--cellule); color: var(--encre); border-color: var(--cellule); font-weight: 700; min-width: 92px; }
+button[aria-pressed="true"] { background: var(--actif); color: var(--encre); border-color: var(--actif); font-weight: 700; }
+.groupe { display: flex; }
+.groupe button { border-radius: 0; margin-left: -1px; }
+.groupe button:first-child { border-radius: 8px 0 0 8px; margin-left: 0; }
+.groupe button:last-child { border-radius: 0 8px 8px 0; }
+.vitesse { display: flex; align-items: center; gap: 8px; flex: 1 1 170px; min-width: 0; color: var(--sourdine); font-size: 13px; }
+.vitesse input { flex: 1; min-width: 0; accent-color: var(--cellule); }
+.vitesse output { font-family: var(--donnee); color: var(--texte); min-width: 3ch; text-align: right; }
+.feuille {
+  position: absolute; inset: 0; z-index: 5; background: rgb(8 11 20 / 0.72);
+  display: flex; align-items: flex-end; justify-content: center;
+}
+.feuille > div {
+  width: 100%; max-width: 620px; max-height: 88%; overflow-y: auto;
+  background: var(--panneau); border: 1px solid var(--trait); border-bottom: 0;
+  border-radius: 16px 16px 0 0; padding: 16px calc(16px) calc(16px + env(safe-area-inset-bottom, 0px));
+  display: flex; flex-direction: column; gap: 14px;
+}
+.feuille .tete { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.feuille h2 { margin: 0; font-size: 18px; }
+.liste { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 8px; }
+.liste button { display: flex; align-items: center; gap: 12px; padding: 8px 12px 8px 8px; text-align: left; height: 100%; font-weight: 700; }
+.liste .texte { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.liste canvas.apercu { width: 64px; height: 64px; flex: none; border-radius: 6px; }
+.liste button span { font: 400 12px var(--donnee); color: var(--sourdine); }
+label.option { display: flex; align-items: center; gap: 8px; color: var(--sourdine); font-size: 14px; }
+label.option input { width: 18px; height: 18px; accent-color: var(--cellule); }
+.coller { display: flex; flex-direction: column; gap: 8px; border-top: 1px solid var(--trait); padding-top: 14px; }
+.coller label { font-weight: 700; }
+.coller p { margin: 0; color: var(--sourdine); font-size: 13px; }
+textarea { font: 13px var(--donnee); color: var(--texte); background: var(--encre); border: 1px solid var(--trait); border-radius: 8px; padding: 10px; min-height: 76px; resize: vertical; width: 100%; box-sizing: border-box; }
+.erreur { color: #ff9a8a; font-size: 13px; margin: 0; }
+</style>
+</head>
+<body>
+
+
+<header>
+  <h1>Game of Life <small>B3/S23 · <span id="moteurNom">…</span></small></h1>
+  <div class="compteurs">
+    <span>Generation <b id="gen">0</b></span>
+    <span>Population <b id="pop">0</b></span>
+  </div>
+</header>
+
+<div class="culture" id="culture">
+  <canvas id="toile" aria-label="Game of Life grid"></canvas>
+  <div class="annonce" id="annonce" hidden><span id="annonceTexte"></span></div>
+
+  <div class="feuille" id="feuille" hidden>
+    <div role="dialog" aria-labelledby="feuilleTitre">
+      <div class="tete">
+        <h2 id="feuilleTitre">Choose a pattern</h2>
+        <button id="fermer" type="button">Close</button>
+      </div>
+      <label class="option"><input type="checkbox" id="vider" checked> Clear the grid before placing the pattern</label>
+      <div class="liste" id="liste"></div>
+      <div class="coller">
+        <label for="rle">Paste a pattern from the conwaylife.com wiki</label>
+        <p>Copy the RLE code from a wiki page, for example <code>bob$2bo$3o!</code></p>
+        <textarea id="rle" spellcheck="false" autocapitalize="off"></textarea>
+        <p class="erreur" id="erreur" hidden>This text doesn't contain a readable pattern (RLE or .cells format).</p>
+        <button id="poserRle" type="button">Place this pattern</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="commandes">
+  <button class="principal" id="lecture" type="button">Pause</button>
+  <button id="pas" type="button" title="Advance one generation">+1</button>
+  <div class="groupe" role="group" aria-label="Tool">
+    <button id="outilMain" type="button" aria-pressed="true">Move</button>
+    <button id="outilDessin" type="button" aria-pressed="false">Draw</button>
+  </div>
+  <button id="motifs" type="button">Patterns</button>
+  <div class="groupe" role="group" aria-label="Zoom">
+    <button id="zoomMoins" type="button" aria-label="Zoom out">−</button>
+    <button id="cadrer" type="button">Fit</button>
+    <button id="zoomPlus" type="button" aria-label="Zoom in">+</button>
+  </div>
+  <button id="hasard" type="button">Random</button>
+  <button id="effacer" type="button">Clear</button>
+  <div class="vitesse">
+    <label for="vitesse">Speed</label>
+    <input id="vitesse" type="range" min="1" max="240" value="12">
+    <output id="vitesseTexte" for="vitesse">12</output>
+  </div>
+</div>
+
+<script>
+"use strict";
+// ---------------------------------------------------------------- Motifs
+const MOTIFS = [
+  ["Glider", "moves diagonally", "bob$2bo$3o!"],
+  ["Lightweight spaceship", "LWSS, travels in a straight line", "o2bo$4bo$o3bo$b4o!"],
+  ["Pulsar", "period-3 oscillator", "2b3o3b3o2b2$o4bobo4bo$o4bobo4bo$o4bobo4bo$2b3o3b3o2b2$2b3o3b3o2b$o4bobo4bo$o4bobo4bo$o4bobo4bo2$2b3o3b3o!"],
+  ["R-pentomino", "5 cells, 1103 generations", "b2o$2o$bo!"],
+  ["Acorn", "7 cells, 5206 generations", "bo5b$3bo3b$2o2b3o!"],
+  ["Diehard", "7 cells, dies out after 130", "6bob$2o6b$bo3b3o!"],
+  ["Gosper glider gun", "a glider every 30 generations", "24bo11b$22bobo11b$12b2o6b2o12b2o$11bo3bo4b2o12b2o$2o8bo5bo3b2o14b$2o8bo3bob2o4bobo11b$10bo5bo7bo11b$11bo3bo20b$12b2o!"],
+  ["Copperhead", "slow spaceship, found in 2016", "b2o2b2o$3b2o$3b2o$obo2bobo$o6bo2$o6bo$b2o2b2o$2b4o2$3b2o$3b2o!"],
+];
+
+// Lit un motif RLE ou plaintext (.cells) -> liste de [x, y], ou null.
+function lireMotif(texte) {
+  const brut = texte.replace(/\r/g, "").split("\n");
+  const lignes = brut.map(l => l.trim()).filter(l => l);
+  const entete = lignes.some(l => /^x\s*=/.test(l));
+  const corps = lignes.filter(l => !/^[#!]/.test(l) && !/^x\s*=/.test(l)).join("");
+  const estRle = entete || (corps.includes("o") && /^[0-9bo$!\s]+$/.test(corps));
+  const cellules = [];
+  if (estRle) {
+    let nombre = "", x = 0, y = 0;
+    for (const c of corps) {
+      if (c >= "0" && c <= "9") { nombre += c; continue; }
+      if (c === "!") break;
+      if (/\s/.test(c)) continue;
+      const n = nombre ? parseInt(nombre, 10) : 1; nombre = "";
+      if (c === "$") { y += n; x = 0; }
+      else if (c === "b" || c === ".") x += n;
+      else if (/[a-zA-Z]/.test(c)) { for (let i = 0; i < n; i++) cellules.push([x + i, y]); x += n; }
+      else return null;
+    }
+  } else {
+    let y = 0;
+    for (let ligne of brut) {
+      if (ligne.startsWith("!")) continue;
+      ligne = ligne.replace(/\s+$/, "");
+      if (ligne && !/^[.O*o ]+$/.test(ligne)) return null;
+      for (let x = 0; x < ligne.length; x++) if ("O*o".includes(ligne[x])) cellules.push([x, y]);
+      y++;
+    }
+  }
+  if (!cellules.length || cellules.length > 2000000) return null;
+  let x0 = Infinity, y0 = Infinity;
+  for (const [x, y] of cellules) { if (x < x0) x0 = x; if (y < y0) y0 = y; }
+  return cellules.map(([x, y]) => [x - x0, y - y0]);
+}
+
+const hexVersVec = h => { h = h.trim().replace("#", ""); return [0, 2, 4].map(i => parseInt(h.substr(i, 2), 16) / 255); };
+const styles = getComputedStyle(document.documentElement);
+const COULEUR = n => styles.getPropertyValue(n).trim();
+const C_FOND = COULEUR("--encre"), C_TRAIT = COULEUR("--trait"), C_CELLULE = COULEUR("--cellule");
+
+// ======================================================= Moteur GPU (WebGL)
+// L'univers est une texture N x N (un pixel = une cellule) dont les bords se
+// rejoignent (tore). Chaque generation est calculee par la carte graphique,
+// toutes les cellules en parallele, en dessinant dans une seconde texture.
+function creerMoteurGPU(toile) {
+  const gl = toile.getContext("webgl", { antialias: false, alpha: false, depth: false, stencil: false, powerPreference: "high-performance" });
+  if (!gl) return null;
+
+  const hp = gl.getShaderPrecisionFormat(gl.FRAGMENT_SHADER, gl.HIGH_FLOAT);
+  const highp = !!hp && hp.precision > 0;
+  const vp = gl.getParameter(gl.MAX_VIEWPORT_DIMS);
+  let N = matchMedia("(pointer: coarse)").matches ? 2048 : 4096;   // plus petit sur telephone
+  N = Math.min(N, gl.getParameter(gl.MAX_TEXTURE_SIZE), gl.getParameter(gl.MAX_RENDERBUFFER_SIZE), vp[0], vp[1]);
+  if (!highp) N = Math.min(N, 1024);       // vieux telephones : precision reduite
+  N = 2 ** Math.floor(Math.log2(N));
+  if (N < 256) return null;
+  const BLOC = 16, R = N / BLOC;           // comptage de la population par blocs de 16 x 16
+
+  const P = highp ? "precision highp float;\n" : "precision mediump float;\n";
+  const VS = "attribute vec2 a_pos; void main(){ gl_Position = vec4(a_pos, 0.0, 1.0); }";
+  const FS_PAS = P + `
+uniform sampler2D u_etat; uniform float u_n;
+float c(float dx, float dy){ return step(0.5, texture2D(u_etat, (gl_FragCoord.xy + vec2(dx, dy)) / u_n).r); }
+void main(){
+  float n = c(-1.,-1.) + c(0.,-1.) + c(1.,-1.) + c(-1.,0.) + c(1.,0.) + c(-1.,1.) + c(0.,1.) + c(1.,1.);
+  float s = c(0., 0.);
+  float v = (n == 3.0 || (s > 0.5 && n == 2.0)) ? 1.0 : 0.0;   // regles de Conway B3/S23
+  gl_FragColor = vec4(v, 0.0, 0.0, 1.0);
+}`;
+  const FS_COMPTE = P + `
+uniform sampler2D u_etat; uniform float u_n;
+void main(){
+  vec2 base = floor(gl_FragCoord.xy) * 16.0; float s = 0.0;
+  for (int i = 0; i < 16; i++) { for (int j = 0; j < 16; j++) {
+    s += step(0.5, texture2D(u_etat, (base + vec2(float(i), float(j)) + 0.5) / u_n).r);
+  } }
+  gl_FragColor = vec4(mod(s, 256.0) / 255.0, floor(s / 256.0) / 255.0, 0.0, 1.0);
+}`;
+  const FS_AFFICHE = P + `
+uniform sampler2D u_etat; uniform vec2 u_o; uniform float u_echelle, u_dpr, u_h, u_n, u_grille;
+uniform vec3 u_fond, u_trait, u_cell;
+float lire(vec2 w){ return step(0.5, texture2D(u_etat, (mod(floor(w), u_n) + 0.5) / u_n).r); }
+void main(){
+  vec2 p = vec2(gl_FragCoord.x, u_h - gl_FragCoord.y) / u_dpr;
+  vec2 w = p / u_echelle + u_o;
+  float v;
+  if (u_echelle * u_dpr < 1.0) {           // tres dezoome : plusieurs cellules par pixel
+    float k = 0.25 / (u_echelle * u_dpr);
+    v = max(max(lire(w + vec2(-k, -k)), lire(w + vec2(k, k))), max(lire(w + vec2(k, -k)), lire(w + vec2(-k, k))));
+  } else v = lire(w);
+  vec2 f = fract(w) * u_echelle;
+  float ligne = u_grille * max(1.0 - step(1.0, f.x), 1.0 - step(1.0, f.y));
+  vec3 c = v > 0.5 ? mix(u_cell, u_trait, ligne) : mix(u_fond, u_trait, ligne);
+  gl_FragColor = vec4(c, 1.0);
+}`;
+
+  let prog = {}, tex = [], fb = [], texR, fbR, quad, cur = 0;
+  const unif = {};
+  function programme(nom, fs) {
+    const p = gl.createProgram();
+    for (const [type, src] of [[gl.VERTEX_SHADER, VS], [gl.FRAGMENT_SHADER, fs]]) {
+      const sh = gl.createShader(type); gl.shaderSource(sh, src); gl.compileShader(sh);
+      if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(sh));
+      gl.attachShader(p, sh);
+    }
+    gl.bindAttribLocation(p, 0, "a_pos"); gl.linkProgram(p);
+    if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(p));
+    prog[nom] = p; unif[nom] = {};
+    const n = gl.getProgramParameter(p, gl.ACTIVE_UNIFORMS);
+    for (let i = 0; i < n; i++) { const u = gl.getActiveUniform(p, i).name; unif[nom][u] = gl.getUniformLocation(p, u); }
+  }
+  function texture(taille, repete) {
+    const t = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, t);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, taille, taille, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    const w = repete ? gl.REPEAT : gl.CLAMP_TO_EDGE;
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, w); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, w);
+    const f = gl.createFramebuffer(); gl.bindFramebuffer(gl.FRAMEBUFFER, f);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, t, 0);
+    if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE) throw new Error("framebuffer incomplet");
+    return [t, f];
+  }
+  function initialiser() {
+    prog = {};
+    programme("pas", FS_PAS); programme("compte", FS_COMPTE); programme("affiche", FS_AFFICHE);
+    quad = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, quad);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, -1, 1, 1, -1, 1, 1]), gl.STATIC_DRAW);
+    gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+    [tex[0], fb[0]] = texture(N, true); [tex[1], fb[1]] = texture(N, true); [texR, fbR] = texture(R, false);
+    gl.activeTexture(gl.TEXTURE0); gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1); gl.pixelStorei(gl.PACK_ALIGNMENT, 1);
+    cur = 0; effacer();
+  }
+  const m = v => ((v % N) + N) % N;
+  let sale = true, dernierCompte = -1e9, cache = { population: 0, bornes: null };
+  const bufCompte = new Uint8Array(R * R * 4), un = new Uint8Array(4);
+
+  function effacer() {
+    gl.clearColor(0, 0, 0, 1);
+    for (const f of fb) { gl.bindFramebuffer(gl.FRAMEBUFFER, f); gl.clear(gl.COLOR_BUFFER_BIT); }
+    sale = true;
+  }
+  // Decoupe un rectangle du tore en au plus 4 rectangles qui ne traversent pas les bords.
+  function morceaux(x0, y0, l, h) {
+    const tx = m(x0), ty = m(y0), l1 = Math.min(l, N - tx), h1 = Math.min(h, N - ty), res = [];
+    for (const [ax, al, dx] of [[tx, l1, 0], [0, l - l1, l1]]) if (al > 0)
+      for (const [ay, ah, dy] of [[ty, h1, 0], [0, h - h1, h1]]) if (ah > 0) res.push([ax, ay, al, ah, dx, dy]);
+    return res;
+  }
+  function ecrire(x, y, l, h, donnees) {
+    gl.bindTexture(gl.TEXTURE_2D, tex[cur]);
+    gl.texSubImage2D(gl.TEXTURE_2D, 0, x, y, l, h, gl.RGBA, gl.UNSIGNED_BYTE, donnees);
+    sale = true;
+  }
+  function lireZone(x, y, l, h) {
+    const d = new Uint8Array(l * h * 4);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fb[cur]); gl.readPixels(x, y, l, h, gl.RGBA, gl.UNSIGNED_BYTE, d);
+    return d;
+  }
+  function dessinerDans(nom, cible, taille) {
+    gl.bindFramebuffer(gl.FRAMEBUFFER, cible); gl.viewport(0, 0, taille[0], taille[1]);
+    gl.useProgram(prog[nom]); gl.bindTexture(gl.TEXTURE_2D, tex[cur]);
+    gl.uniform1i(unif[nom].u_etat, 0); gl.uniform1f(unif[nom].u_n, N);
+  }
+
+  const moteur = {
+    gpu: true, nom: `GPU · ${N} × ${N}`, taille: N, limiteHasard: N, perdu: false, surRestauration: null,
+    zoomMin: (l, h) => Math.max(l, h) / N,
+    normaliser: v => m(v),
+    redimensionner() {},
+    avancer() {
+      dessinerDans("pas", fb[1 - cur], [N, N]);
+      gl.drawArrays(gl.TRIANGLES, 0, 6);
+      cur = 1 - cur; sale = true;
+    },
+    lire(x, y) {
+      gl.bindFramebuffer(gl.FRAMEBUFFER, fb[cur]); gl.readPixels(m(x), m(y), 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, un);
+      return un[0] > 127;
+    },
+    marquer(x, y, v) { ecrire(m(x), m(y), 1, 1, new Uint8Array([v ? 255 : 0, 0, 0, 255])); },
+    poser(cellules, x0, y0) {
+      let l = 0, h = 0;
+      for (const [x, y] of cellules) { if (x >= l) l = x + 1; if (y >= h) h = y + 1; }
+      if (l > N || h > N) return false;
+      const masque = new Uint8Array(l * h);
+      for (const [x, y] of cellules) masque[y * l + x] = 1;
+      for (const [ax, ay, al, ah, dx, dy] of morceaux(x0, y0, l, h)) {
+        const d = lireZone(ax, ay, al, ah);
+        for (let j = 0; j < ah; j++) for (let i = 0; i < al; i++)
+          if (masque[(dy + j) * l + dx + i]) d[(j * al + i) * 4] = 255;
+        ecrire(ax, ay, al, ah, d);
+      }
+      return true;
+    },
+    effacer,
+    remplir(x0, y0, l, h, densite) {
+      effacer();
+      for (const [ax, ay, al, ah] of morceaux(x0, y0, Math.min(l, N), Math.min(h, N))) {
+        const d = new Uint8Array(al * ah * 4);
+        for (let i = 0; i < al * ah; i++) { d[i * 4] = Math.random() < densite ? 255 : 0; d[i * 4 + 3] = 255; }
+        ecrire(ax, ay, al, ah, d);
+      }
+    },
+    // Population et zone occupee : la carte graphique compte les cellules par blocs
+    // de 16 x 16, on ne relit que ce petit resume (au plus ~3 fois par seconde).
+    statistiques(force) {
+      const t = performance.now();
+      if (!force && (!sale || t - dernierCompte < 300)) return cache;
+      dessinerDans("compte", fbR, [R, R]);
+      gl.drawArrays(gl.TRIANGLES, 0, 6);
+      gl.readPixels(0, 0, R, R, gl.RGBA, gl.UNSIGNED_BYTE, bufCompte);
+      let pop = 0;
+      const colonnes = new Uint8Array(R), rangees = new Uint8Array(R);
+      for (let by = 0; by < R; by++) for (let bx = 0; bx < R; bx++) {
+        const k = (by * R + bx) * 4, n = bufCompte[k] + 256 * bufCompte[k + 1];
+        if (!n) continue;
+        pop += n; colonnes[bx] = 1; rangees[by] = 1;
+      }
+      // Zone occupee sur un tore : on cherche le plus grand vide (qui peut
+      // traverser le bord) et on garde le reste.
+      const etendue = occ => {
+        let meilleur = 0, fin = -1, run = 0;
+        for (let i = 0; i < 2 * R; i++) {
+          if (occ[i % R]) run = 0; else if (++run > meilleur) { meilleur = run; fin = i; }
+        }
+        meilleur = Math.min(meilleur, R);
+        const debut = meilleur ? (fin + 1) % R : 0;
+        return [debut * BLOC, (debut + R - meilleur) * BLOC - 1];
+      };
+      let bornes = null;
+      if (pop) { const [x1, x2] = etendue(colonnes), [y1, y2] = etendue(rangees); bornes = [x1, y1, x2, y2]; }
+      cache = { population: pop, bornes };
+      sale = false; dernierCompte = t;
+      return cache;
+    },
+    bornes() { return moteur.statistiques(true).bornes; },
+    dessiner(v) {
+      dessinerDans("affiche", null, [toile.width, toile.height]);
+      const u = unif.affiche;
+      gl.uniform2f(u.u_o, v.ox, v.oy); gl.uniform1f(u.u_echelle, v.echelle); gl.uniform1f(u.u_dpr, v.dpr);
+      gl.uniform1f(u.u_h, toile.height); gl.uniform1f(u.u_grille, v.echelle >= 6 ? 1 : 0);
+      gl.uniform3fv(u.u_fond, hexVersVec(C_FOND)); gl.uniform3fv(u.u_trait, hexVersVec(C_TRAIT)); gl.uniform3fv(u.u_cell, hexVersVec(C_CELLULE));
+      gl.drawArrays(gl.TRIANGLES, 0, 6);
+    },
+  };
+
+  // Le telephone peut liberer la memoire graphique (mise en veille, changement d'appli).
+  toile.addEventListener("webglcontextlost", e => { e.preventDefault(); moteur.perdu = true; });
+  toile.addEventListener("webglcontextrestored", () => {
+    initialiser(); moteur.perdu = false;
+    if (moteur.surRestauration) moteur.surRestauration();
+  });
+
+  initialiser();
+  return moteur;
+}
+
+// ======================================= Moteur de secours (processeur)
+// Utilise seulement si WebGL est indisponible : grille infinie, on ne stocke
+// que les cellules vivantes.
+function creerMoteurCPU(toile) {
+  const ctx = toile.getContext("2d");
+  const DEMI = 32768, COTE = 65536;
+  const cle = (x, y) => (x + DEMI) * COTE + (y + DEMI);
+  const cleX = k => Math.floor(k / COTE) - DEMI, cleY = k => (k % COTE) - DEMI;
+  const dans = (x, y) => x >= -DEMI && x < DEMI && y >= -DEMI && y < DEMI;
+  let vivantes = new Set();
+  function suivante(actuelles) {
+    const voisines = new Map();
+    for (const k of actuelles) {
+      const x = cleX(k), y = cleY(k);
+      for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) {
+        if ((!dx && !dy) || !dans(x + dx, y + dy)) continue;
+        const nk = cle(x + dx, y + dy);
+        voisines.set(nk, (voisines.get(nk) || 0) + 1);
+      }
+    }
+    const res = new Set();
+    for (const [k, n] of voisines) if (n === 3 || (n === 2 && actuelles.has(k))) res.add(k);
+    return res;
+  }
+  return {
+    gpu: false, nom: "CPU", taille: Infinity, limiteHasard: 140, perdu: false,
+    zoomMin: () => 1,
+    normaliser: v => v,
+    redimensionner(dpr) { ctx.setTransform(dpr, 0, 0, dpr, 0, 0); },
+    avancer() { vivantes = suivante(vivantes); },
+    lire: (x, y) => vivantes.has(cle(x, y)),
+    marquer(x, y, v) { if (!dans(x, y)) return; if (v) vivantes.add(cle(x, y)); else vivantes.delete(cle(x, y)); },
+    poser(cellules, x0, y0) { for (const [x, y] of cellules) if (dans(x0 + x, y0 + y)) vivantes.add(cle(x0 + x, y0 + y)); return true; },
+    effacer() { vivantes = new Set(); },
+    remplir(x0, y0, l, h, densite) {
+      vivantes = new Set();
+      for (let x = 0; x < l; x++) for (let y = 0; y < h; y++) if (Math.random() < densite && dans(x0 + x, y0 + y)) vivantes.add(cle(x0 + x, y0 + y));
+    },
+    statistiques() { return { population: vivantes.size }; },
+    bornes() {
+      if (!vivantes.size) return null;
+      let x1 = Infinity, y1 = Infinity, x2 = -Infinity, y2 = -Infinity;
+      for (const k of vivantes) { const x = cleX(k), y = cleY(k); if (x < x1) x1 = x; if (x > x2) x2 = x; if (y < y1) y1 = y; if (y > y2) y2 = y; }
+      return [x1, y1, x2, y2];
+    },
+    dessiner(v) {
+      ctx.fillStyle = C_FOND; ctx.fillRect(0, 0, v.largeur, v.hauteur);
+      const grille = v.echelle >= 6;
+      if (grille) {
+        ctx.fillStyle = C_TRAIT;
+        for (let x = Math.floor(v.ox); x <= v.ox + v.largeur / v.echelle; x++) ctx.fillRect(Math.floor((x - v.ox) * v.echelle), 0, 1, v.hauteur);
+        for (let y = Math.floor(v.oy); y <= v.oy + v.hauteur / v.echelle; y++) ctx.fillRect(0, Math.floor((y - v.oy) * v.echelle), v.largeur, 1);
+      }
+      const marge = grille ? 1 : 0, cote = Math.max(1, Math.ceil(v.echelle) - marge);
+      ctx.fillStyle = C_CELLULE;
+      for (const k of vivantes) {
+        const sx = (cleX(k) - v.ox) * v.echelle, sy = (cleY(k) - v.oy) * v.echelle;
+        if (sx < -v.echelle || sy < -v.echelle || sx > v.largeur || sy > v.hauteur) continue;
+        ctx.fillRect(Math.floor(sx) + marge, Math.floor(sy) + marge, cote, cote);
+      }
+    },
+  };
+}
+
+// ============================================================ Application
+const $ = id => document.getElementById(id);
+const culture = $("culture");
+let toile = $("toile"), moteur = null;
+try { moteur = creerMoteurGPU(toile); } catch (e) { moteur = null; }
+if (!moteur) {                         // la toile WebGL ne peut pas devenir 2D : on la remplace
+  const t = toile.cloneNode(false); toile.replaceWith(t); toile = t;
+  moteur = creerMoteurCPU(toile);
+}
+$("moteurNom").textContent = moteur.nom;
+
+const ZOOM_MAX = 48;
+const vue = { echelle: 12, ox: 0, oy: 0, largeur: 0, hauteur: 0, dpr: 1 };
+let pret = false, generation = 0;
+let enCours = true, vitesse = 12, cumul = 0, dernier = 0;
+let outil = "main", enAttente = null;   // motif a poser au prochain toucher
+
+const zoomMin = () => Math.max(0.05, moteur.zoomMin(vue.largeur, vue.hauteur));
+function zoomer(px, py, facteur) {
+  const wx = px / vue.echelle + vue.ox, wy = py / vue.echelle + vue.oy;
+  vue.echelle = Math.min(ZOOM_MAX, Math.max(zoomMin(), vue.echelle * facteur));
+  vue.ox = wx - px / vue.echelle; vue.oy = wy - py / vue.echelle;
+}
+function cadrer() {
+  const b = moteur.bornes();
+  if (!b) { vue.echelle = 12; vue.ox = -vue.largeur / 24; vue.oy = -vue.hauteur / 24; return; }
+  const [x1, y1, x2, y2] = b, l = x2 - x1 + 1, h = y2 - y1 + 1;
+  vue.echelle = Math.min(16, Math.max(zoomMin(), Math.min(vue.largeur / (l + 12), vue.hauteur / (h + 12))));
+  vue.ox = (x1 + x2 + 1) / 2 - vue.largeur / vue.echelle / 2;
+  vue.oy = (y1 + y2 + 1) / 2 - vue.hauteur / vue.echelle / 2;
+}
+function poserCentre(cellules, cx, cy) {
+  let l = 0, h = 0;
+  for (const [x, y] of cellules) { if (x >= l) l = x + 1; if (y >= h) h = y + 1; }
+  const ok = moteur.poser(cellules, Math.round(cx - l / 2), Math.round(cy - h / 2));
+  if (!ok) annoncer(`Pattern too large for this universe (${moteur.taille} × ${moteur.taille})`);
+  return ok;
+}
+function avancer() { moteur.avancer(); generation++; }
+
+function boucle(t) {
+  const dt = Math.min(0.1, (t - dernier) / 1000); dernier = t;
+  if (enCours && !moteur.perdu && !document.hidden) {
+    cumul += dt;
+    const debut = performance.now(), limite = moteur.gpu ? (dt > 0.045 ? 1 : 8) : Infinity;
+    let n = 0;
+    while (cumul >= 1 / vitesse) {
+      avancer(); cumul -= 1 / vitesse; n++;
+      if (n >= limite || performance.now() - debut > 30) { cumul = 0; break; }   // appareil sature : on ralentit
+    }
+  } else cumul = 0;
+  if (!moteur.perdu) {
+    vue.ox = moteur.normaliser(vue.ox); vue.oy = moteur.normaliser(vue.oy);
+    moteur.dessiner(vue);
+    $("pop").textContent = moteur.statistiques(false).population.toLocaleString("en-US");
+  }
+  $("gen").textContent = generation.toLocaleString("en-US");
+  requestAnimationFrame(boucle);
+}
+
+function redimensionner() {
+  const r = culture.getBoundingClientRect(), dpr = Math.min(window.devicePixelRatio || 1, 3);
+  if (!r.width || !r.height) return;
+  const cx = vue.ox + vue.largeur / vue.echelle / 2, cy = vue.oy + vue.hauteur / vue.echelle / 2;
+  vue.largeur = r.width; vue.hauteur = r.height; vue.dpr = dpr;
+  toile.width = Math.round(r.width * dpr); toile.height = Math.round(r.height * dpr);
+  moteur.redimensionner(dpr);
+  if (!pret) { pret = true; vue.echelle = Math.min(14, Math.max(5, vue.largeur / 46)); vue.ox = -5; vue.oy = -4; }
+  else {
+    vue.echelle = Math.max(vue.echelle, zoomMin());
+    vue.ox = cx - vue.largeur / vue.echelle / 2; vue.oy = cy - vue.hauteur / vue.echelle / 2;
+  }
+}
+
+// ------------------------------------------------------------ Commandes
+function reglerLecture(etat) { enCours = etat; $("lecture").textContent = enCours ? "Pause" : "Play"; }
+function reglerOutil(nom) {
+  outil = nom;
+  $("outilDessin").setAttribute("aria-pressed", nom === "dessin");
+  $("outilMain").setAttribute("aria-pressed", nom === "main");
+  toile.style.cursor = nom === "main" ? "grab" : "crosshair";
+}
+let minuterieAnnonce = 0;
+function annoncer(texte, duree) {
+  $("annonce").hidden = !texte; $("annonceTexte").textContent = texte || "";
+  clearTimeout(minuterieAnnonce);
+  if (texte && duree) minuterieAnnonce = setTimeout(() => annoncer(""), duree);
+}
+const centreVue = () => [vue.ox + vue.largeur / vue.echelle / 2, vue.oy + vue.hauteur / vue.echelle / 2];
+
+$("lecture").onclick = () => reglerLecture(!enCours);
+$("pas").onclick = () => { reglerLecture(false); avancer(); };
+$("outilDessin").onclick = () => reglerOutil("dessin");
+$("outilMain").onclick = () => reglerOutil("main");
+$("zoomPlus").onclick = () => zoomer(vue.largeur / 2, vue.hauteur / 2, 1.4);
+$("zoomMoins").onclick = () => zoomer(vue.largeur / 2, vue.hauteur / 2, 1 / 1.4);
+$("cadrer").onclick = cadrer;
+$("effacer").onclick = () => { moteur.effacer(); generation = 0; reglerLecture(false); };
+$("hasard").onclick = () => {
+  const lim = moteur.limiteHasard;
+  const l = Math.min(lim, Math.ceil(vue.largeur / vue.echelle)), h = Math.min(lim, Math.ceil(vue.hauteur / vue.echelle));
+  const [cx, cy] = centreVue();
+  moteur.remplir(Math.round(cx - l / 2), Math.round(cy - h / 2), l, h, 0.3);
+  generation = 0;
+};
+$("vitesse").oninput = e => { vitesse = +e.target.value; $("vitesseTexte").textContent = vitesse; };
+
+// Feuille des motifs
+function ouvrirFeuille(etat) { $("feuille").hidden = !etat; $("erreur").hidden = true; }
+function choisir(cellules, nom) {
+  ouvrirFeuille(false);
+  if ($("vider").checked) {
+    moteur.effacer(); generation = 0; reglerLecture(false);
+    annoncer("");
+    if (poserCentre(cellules, ...centreVue())) cadrer();
+  } else { enAttente = cellules; annoncer("Tap the grid to place: " + nom); }
+}
+$("motifs").onclick = () => ouvrirFeuille(true);
+$("fermer").onclick = () => ouvrirFeuille(false);
+$("feuille").onclick = e => { if (e.target === $("feuille")) ouvrirFeuille(false); };
+// Petit schema du motif, dessine a partir de ses cellules.
+function miniature(cellules, nom) {
+  const COTE_PX = 64, dpr = Math.min(window.devicePixelRatio || 1, 3);
+  const c = document.createElement("canvas");
+  c.className = "apercu"; c.width = c.height = Math.round(COTE_PX * dpr);
+  c.setAttribute("role", "img"); c.setAttribute("aria-label", "Diagram of " + nom);
+  const g = c.getContext("2d"); g.scale(dpr, dpr);
+  let l = 0, h = 0;
+  for (const [x, y] of cellules) { if (x >= l) l = x + 1; if (y >= h) h = y + 1; }
+  const n = Math.max(l, h) + 2;                       // une case de marge autour
+  const t = (COTE_PX - 4) / n;                        // taille d'une case
+  const x0 = (COTE_PX - l * t) / 2, y0 = (COTE_PX - h * t) / 2;
+  g.fillStyle = C_FOND; g.fillRect(0, 0, COTE_PX, COTE_PX);
+  if (t >= 4) {                                       // quadrillage si les cases sont assez grandes
+    g.fillStyle = C_TRAIT;
+    for (let i = -1; i <= l + 1; i++) g.fillRect(x0 + i * t, y0 - t, 1, (h + 2) * t);
+    for (let j = -1; j <= h + 1; j++) g.fillRect(x0 - t, y0 + j * t, (l + 2) * t, 1);
+  }
+  g.fillStyle = C_CELLULE;
+  const m = t >= 4 ? 1 : 0;
+  for (const [x, y] of cellules) g.fillRect(x0 + x * t + m, y0 + y * t + m, Math.max(1, t - m), Math.max(1, t - m));
+  return c;
+}
+for (const [nom, detail, rle] of MOTIFS) {
+  const cellules = lireMotif(rle);
+  const b = document.createElement("button"); b.type = "button";
+  const texte = document.createElement("div"); texte.className = "texte"; texte.textContent = nom;
+  const s = document.createElement("span"); s.textContent = detail; texte.appendChild(s);
+  b.append(miniature(cellules, nom), texte);
+  b.onclick = () => choisir(cellules, nom);
+  $("liste").appendChild(b);
+}
+$("poserRle").onclick = () => {
+  const cellules = lireMotif($("rle").value);
+  if (!cellules) { $("erreur").hidden = false; return; }
+  choisir(cellules, "pasted pattern");
+  $("rle").value = "";            // le code est effacé une fois le motif pris en compte
+};
+
+// ------------------------------------------- Souris, doigts et clavier
+const pointeurs = new Map();
+let geste = null;      // {type: "trait", ajoute, x, y} | {type: "main"} | {type: "pince", d, mx, my}
+const position = e => { const r = toile.getBoundingClientRect(); return [e.clientX - r.left, e.clientY - r.top]; };
+const caseSous = (px, py) => [Math.floor(px / vue.echelle + vue.ox), Math.floor(py / vue.echelle + vue.oy)];
+function pince() {
+  const [a, b] = [...pointeurs.values()];
+  return { type: "pince", d: Math.hypot(a[0] - b[0], a[1] - b[1]) || 1, mx: (a[0] + b[0]) / 2, my: (a[1] + b[1]) / 2 };
+}
+
+toile.addEventListener("pointerdown", e => {
+  toile.setPointerCapture(e.pointerId);
+  const p = position(e); pointeurs.set(e.pointerId, p);
+  if (pointeurs.size === 2) { geste = pince(); return; }
+  if (pointeurs.size > 2) return;
+  if (enAttente && e.button === 0) {
+    if (poserCentre(enAttente, p[0] / vue.echelle + vue.ox, p[1] / vue.echelle + vue.oy)) annoncer("");
+    enAttente = null; geste = null; return;
+  }
+  if (e.button !== 0 || outil === "main") { geste = { type: "main" }; return; }
+  const [x, y] = caseSous(...p), ajoute = !moteur.lire(x, y);
+  moteur.marquer(x, y, ajoute); geste = { type: "trait", ajoute, x, y };
+});
+toile.addEventListener("pointermove", e => {
+  if (!pointeurs.has(e.pointerId)) return;
+  const avant = pointeurs.get(e.pointerId), p = position(e); pointeurs.set(e.pointerId, p);
+  if (!geste) return;
+  if (geste.type === "pince" && pointeurs.size === 2) {
+    const n = pince();
+    vue.ox -= (n.mx - geste.mx) / vue.echelle; vue.oy -= (n.my - geste.my) / vue.echelle;
+    zoomer(n.mx, n.my, n.d / geste.d); geste = n;
+  } else if (geste.type === "main") {
+    vue.ox -= (p[0] - avant[0]) / vue.echelle; vue.oy -= (p[1] - avant[1]) / vue.echelle;
+  } else if (geste.type === "trait") {
+    const [x, y] = caseSous(...p);
+    const n = Math.max(Math.abs(x - geste.x), Math.abs(y - geste.y));   // pas de trou si le geste est rapide
+    for (let i = 1; i <= n; i++) moteur.marquer(Math.round(geste.x + (x - geste.x) * i / n), Math.round(geste.y + (y - geste.y) * i / n), geste.ajoute);
+    geste.x = x; geste.y = y;
+  }
+});
+function relacher(e) { pointeurs.delete(e.pointerId); geste = pointeurs.size === 1 && geste && geste.type === "pince" ? { type: "main" } : (pointeurs.size ? geste : null); }
+toile.addEventListener("pointerup", relacher);
+toile.addEventListener("pointercancel", relacher);
+toile.addEventListener("contextmenu", e => e.preventDefault());
+toile.addEventListener("wheel", e => { e.preventDefault(); zoomer(...position(e), e.deltaY < 0 ? 1.2 : 1 / 1.2); }, { passive: false });
+
+window.addEventListener("keydown", e => {
+  if (e.key === "Escape") { ouvrirFeuille(false); enAttente = null; annoncer(""); return; }
+  if (e.target.matches("textarea, input, button") || !$("feuille").hidden) return;
+  if (e.key === " ") { e.preventDefault(); reglerLecture(!enCours); }
+  else if (e.key === "n" || e.key === "N") { reglerLecture(false); avancer(); }
+  else if (e.key.startsWith("Arrow")) {
+    const d = 60 / vue.echelle;
+    if (e.key === "ArrowLeft") vue.ox -= d; if (e.key === "ArrowRight") vue.ox += d;
+    if (e.key === "ArrowUp") vue.oy -= d; if (e.key === "ArrowDown") vue.oy += d;
+    e.preventDefault();
+  }
+});
+
+// ---------------------------------------------------------------- Depart
+const CANON = lireMotif(MOTIFS[6][2]);
+function demarrer() { moteur.effacer(); generation = 0; poserCentre(CANON, 18, 4); }
+moteur.surRestauration = () => { demarrer(); annoncer("Simulation restarted after sleep mode", 4000); };
+reglerOutil("main");
+demarrer();
+new ResizeObserver(redimensionner).observe(culture);
+redimensionner();
+requestAnimationFrame(t => { dernier = t; requestAnimationFrame(boucle); });
+</script>
+
+</body>
+</html>
