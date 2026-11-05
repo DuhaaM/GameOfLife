@@ -152,11 +152,12 @@ def generation_suivante(vivantes):
                     voisine = (x + dx, y + dy)
                     nb_voisines[voisine] = nb_voisines.get(voisine, 0) + 1
 
-    return {
-        case
-        for case, n in nb_voisines.items()
-        if n == 3 or (n == 2 and case in vivantes)
-    }
+    nouvelles_vivantes = set()
+    for case, n in nb_voisines.items():
+        if n == 3 or (n == 2 and case in vivantes):
+            nouvelles_vivantes.add(case)
+    return nouvelles_vivantes
+    
 
 
 def poser_motif(vivantes, lignes, x0, y0):
