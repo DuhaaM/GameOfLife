@@ -2,7 +2,7 @@
 
 This project contains two interactive versions of Conway's Game of Life:
 
-1. **A web version**: [`Game/game_of_life_web.html`](Game/game_of_life_web.html).
+1. **A web version**: [`index.html`](index.html).
    It runs in any modern browser, on computers as well as phones and tablets.
 2. **A desktop version**: [`Python/jeu_de_la_vie.py`](Python/jeu_de_la_vie.py).
    It is a Python program built with the pygame library.
@@ -41,16 +41,16 @@ These rules are very simple, but they produce surprisingly complex behaviours:
 
 ---
 
-## 2. The web version (`Game/game_of_life_web.html`)
+## 2. The web version (`index.html`)
 
 ### 2.1 Launching
 
-No installation is needed. Open `game_of_life_web.html` in a web browser
+No installation is needed. Open `index.html` in a web browser
 (Firefox, Chrome, Edge, Safari, etc.), for example by double-clicking it.
 The game only uses the internet to load its fonts, so it works offline too.
 
-When the game starts, a Gosper glider gun is already on the grid and the
-simulation is running.
+When the game starts, the grid is empty and the simulation is paused.
+Draw cells, pick a pattern or use **Random**, then press **Play**.
 
 ### 2.2 Screen layout
 
