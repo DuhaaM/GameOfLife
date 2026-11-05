@@ -2,7 +2,8 @@
 
 This project contains two interactive versions of Conway's Game of Life:
 
-1. **A web version**: [`index.html`](index.html).
+1. **A web version**: [`index.html`](index.html), playable online at
+   <https://duhaam.github.io/GameOfLife/>.
    It runs in any modern browser, on computers as well as phones and tablets.
 2. **A desktop version**: [`Python/jeu_de_la_vie.py`](Python/jeu_de_la_vie.py).
    It is a Python program built with the pygame library.
@@ -45,7 +46,8 @@ These rules are very simple, but they produce surprisingly complex behaviours:
 
 ### 2.1 Launching
 
-No installation is needed. Open `index.html` in a web browser
+No installation is needed. Play it online at
+<https://duhaam.github.io/GameOfLife/>, or open `index.html` in a web browser
 (Firefox, Chrome, Edge, Safari, etc.), for example by double-clicking it.
 The game only uses the internet to load its fonts, so it works offline too.
 
