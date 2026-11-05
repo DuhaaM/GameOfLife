@@ -707,8 +707,7 @@ window.addEventListener("keydown", e => {
 });
 
 // ---------------------------------------------------------------- Depart
-const CANON = lireMotif(MOTIFS[6][2]);
-function demarrer() { moteur.effacer(); generation = 0; poserCentre(CANON, 18, 4); }
+function demarrer() { moteur.effacer(); generation = 0; reglerLecture(false); }   // grille vide au lancement
 moteur.surRestauration = () => { demarrer(); annoncer("Simulation restarted after sleep mode", 4000); };
 reglerOutil("main");
 demarrer();
