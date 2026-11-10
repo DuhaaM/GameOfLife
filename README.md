@@ -56,8 +56,7 @@ Draw cells, pick a pattern or use **Random**, then press **Play**.
 
 ### 2.2 Screen layout
 
-- **Top bar**: shows the title and the simulation engine in use (GPU or CPU).
-  It also shows the current **generation** number and the **population**
+- **Top bar**: shows the title and the rule (B3/S23). It also shows the current **generation** number and the **population**
   (the number of living cells).
 - **Centre**: the grid.
 - **Bottom bar**: the control buttons.
@@ -72,7 +71,7 @@ Draw cells, pick a pattern or use **Random**, then press **Play**.
 | **Patterns**    | Open the pattern library (see 2.5).                                                                                                          |
 | **− / +**       | Zoom out / zoom in.                                                                                                                          |
 | **Fit**         | Zoom and centre the view on all living cells.                                                                                                |
-| **Random**      | Fill the visible area with random cells.                                                                                                     |
+| **Random**      | Fill the visible area with random cells (at most 2048 × 2048).                                                                               |
 | **Clear**       | Erase every cell and reset the generation counter.                                                                                           |
 | **Speed**       | Slider from 1 to 240 generations per second.                                                                                                 |
 
@@ -110,16 +109,17 @@ The plaintext `.cells` format works too.
 
 ### 2.6 How it works
 
-- **GPU engine (default)**: the universe is stored as an image of up to
-  4096 × 4096 cells (2048 × 2048 on phones). The graphics card computes every
-  generation with WebGL, updating all cells in parallel, so very large and
-  very fast simulations are possible. The edges of the grid are connected,
-  like a *torus*: a glider leaving on the right comes back on the left.
-- **CPU engine (fallback)**: used only if WebGL is not available. It stores
-  only the living cells, so the grid is practically unlimited. However, it is
-  slower on big patterns.
+The grid is infinite: it has no edges, so a glider can travel forever
+(the practical limit is about one billion cells in each direction).
 
-The top bar shows which engine is in use.
+- The universe is cut into **tiles** of 32 × 32 cells. Only the tiles that
+  contain living cells are kept in memory, so an empty region costs nothing.
+- Each row of a tile is stored as a single 32-bit number (one bit per cell).
+  The program computes the next generation with bitwise operations, which
+  updates 32 cells at once. A random area of 1024 × 1024 cells takes only a
+  few milliseconds per generation.
+- The program draws only the tiles inside the view. When you zoom out a lot,
+  several cells share one pixel of the screen.
 
 ---
 

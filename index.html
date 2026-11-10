@@ -207,296 +207,211 @@ const styles = getComputedStyle(document.documentElement);
 const COULEUR = n => styles.getPropertyValue(n).trim();
 const C_FOND = COULEUR("--encre"), C_TRAIT = COULEUR("--trait"), C_CELLULE = COULEUR("--cellule");
 
-// ======================================================= Moteur GPU (WebGL)
-// L'univers est une texture N x N (un pixel = une cellule) dont les bords se
-// rejoignent (tore). Chaque generation est calculee par la carte graphique,
-// toutes les cellules en parallele, en dessinant dans une seconde texture.
-function creerMoteurGPU(toile) {
-  const gl = toile.getContext("webgl", { antialias: false, alpha: false, depth: false, stencil: false, powerPreference: "high-performance" });
-  if (!gl) return null;
+// ================================================ Moteur (grille infinie)
+// L'univers n'a pas de bord : il est decoupe en tuiles de 32 x 32 cellules et
+// on ne garde en memoire que les tuiles qui contiennent des cellules vivantes.
+// Une ligne de tuile tient dans un entier de 32 bits (bit i = colonne i), ce qui
+// permet de calculer 32 cellules a la fois avec des operations bit a bit.
+function creerMoteur(toile) {
+  const ctx = toile.getContext("2d");
+  const T = 32, OFF = 2 ** 25, SPAN = 2 ** 26;     // tuiles de -2^25 a 2^25 : environ ±1 milliard de cellules
+  const cle = (tx, ty) => (tx + OFF) * SPAN + (ty + OFF);
+  const cleX = k => Math.floor(k / SPAN) - OFF, cleY = k => k % SPAN - OFF;
+  const dansMonde = (tx, ty) => tx > -OFF && tx < OFF - 1 && ty > -OFF && ty < OFF - 1;
+  const VIDE = new Int32Array(T);
+  let tuiles = new Map();                          // cle -> Int32Array(32)
+  let reserve = [], version = 0;                   // tableaux recycles ; version change a chaque modification
+  const nouvelle = () => reserve.pop() || new Int32Array(T);
+  const popcount = v => {
+    v = v - ((v >>> 1) & 0x55555555); v = (v & 0x33333333) + ((v >>> 2) & 0x33333333);
+    return Math.imul((v + (v >>> 4)) & 0x0F0F0F0F, 0x01010101) >>> 24;
+  };
 
-  const hp = gl.getShaderPrecisionFormat(gl.FRAGMENT_SHADER, gl.HIGH_FLOAT);
-  const highp = !!hp && hp.precision > 0;
-  const vp = gl.getParameter(gl.MAX_VIEWPORT_DIMS);
-  let N = matchMedia("(pointer: coarse)").matches ? 2048 : 4096;   // plus petit sur telephone
-  N = Math.min(N, gl.getParameter(gl.MAX_TEXTURE_SIZE), gl.getParameter(gl.MAX_RENDERBUFFER_SIZE), vp[0], vp[1]);
-  if (!highp) N = Math.min(N, 1024);       // vieux telephones : precision reduite
-  N = 2 ** Math.floor(Math.log2(N));
-  if (N < 256) return null;
-  const BLOC = 16, R = N / BLOC;           // comptage de la population par blocs de 16 x 16
-
-  const P = highp ? "precision highp float;\n" : "precision mediump float;\n";
-  const VS = "attribute vec2 a_pos; void main(){ gl_Position = vec4(a_pos, 0.0, 1.0); }";
-  const FS_PAS = P + `
-uniform sampler2D u_etat; uniform float u_n;
-float c(float dx, float dy){ return step(0.5, texture2D(u_etat, (gl_FragCoord.xy + vec2(dx, dy)) / u_n).r); }
-void main(){
-  float n = c(-1.,-1.) + c(0.,-1.) + c(1.,-1.) + c(-1.,0.) + c(1.,0.) + c(-1.,1.) + c(0.,1.) + c(1.,1.);
-  float s = c(0., 0.);
-  float v = (n == 3.0 || (s > 0.5 && n == 2.0)) ? 1.0 : 0.0;   // regles de Conway B3/S23
-  gl_FragColor = vec4(v, 0.0, 0.0, 1.0);
-}`;
-  const FS_COMPTE = P + `
-uniform sampler2D u_etat; uniform float u_n;
-void main(){
-  vec2 base = floor(gl_FragCoord.xy) * 16.0; float s = 0.0;
-  for (int i = 0; i < 16; i++) { for (int j = 0; j < 16; j++) {
-    s += step(0.5, texture2D(u_etat, (base + vec2(float(i), float(j)) + 0.5) / u_n).r);
-  } }
-  gl_FragColor = vec4(mod(s, 256.0) / 255.0, floor(s / 256.0) / 255.0, 0.0, 1.0);
-}`;
-  const FS_AFFICHE = P + `
-uniform sampler2D u_etat; uniform vec2 u_o; uniform float u_echelle, u_dpr, u_h, u_n, u_grille;
-uniform vec3 u_fond, u_trait, u_cell;
-float lire(vec2 w){ return step(0.5, texture2D(u_etat, (mod(floor(w), u_n) + 0.5) / u_n).r); }
-void main(){
-  vec2 p = vec2(gl_FragCoord.x, u_h - gl_FragCoord.y) / u_dpr;
-  vec2 w = p / u_echelle + u_o;
-  float v;
-  if (u_echelle * u_dpr < 1.0) {           // tres dezoome : plusieurs cellules par pixel
-    float k = 0.25 / (u_echelle * u_dpr);
-    v = max(max(lire(w + vec2(-k, -k)), lire(w + vec2(k, k))), max(lire(w + vec2(k, -k)), lire(w + vec2(-k, k))));
-  } else v = lire(w);
-  vec2 f = fract(w) * u_echelle;
-  float ligne = u_grille * max(1.0 - step(1.0, f.x), 1.0 - step(1.0, f.y));
-  vec3 c = v > 0.5 ? mix(u_cell, u_trait, ligne) : mix(u_fond, u_trait, ligne);
-  gl_FragColor = vec4(c, 1.0);
-}`;
-
-  let prog = {}, tex = [], fb = [], texR, fbR, quad, cur = 0;
-  const unif = {};
-  function programme(nom, fs) {
-    const p = gl.createProgram();
-    for (const [type, src] of [[gl.VERTEX_SHADER, VS], [gl.FRAGMENT_SHADER, fs]]) {
-      const sh = gl.createShader(type); gl.shaderSource(sh, src); gl.compileShader(sh);
-      if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(sh));
-      gl.attachShader(p, sh);
+  // Une generation. Les cellules voisines sont additionnees en parallele sur les
+  // 32 bits d'une ligne (additionneurs bit a bit), puis on applique B3/S23.
+  function avancer() {
+    const candidates = new Set();
+    for (const [k, t] of tuiles) {                 // une tuile vide peut naitre a cote d'un bord occupe
+      candidates.add(k);
+      let ou = 0; for (let j = 0; j < T; j++) ou |= t[j];
+      const h = t[0], b = t[T - 1];
+      if (h) candidates.add(k - 1);
+      if (b) candidates.add(k + 1);
+      if (ou & 1) candidates.add(k - SPAN);
+      if (ou >>> 31) candidates.add(k + SPAN);
+      if (h & 1) candidates.add(k - SPAN - 1);
+      if (h >>> 31) candidates.add(k + SPAN - 1);
+      if (b & 1) candidates.add(k - SPAN + 1);
+      if (b >>> 31) candidates.add(k + SPAN + 1);
     }
-    gl.bindAttribLocation(p, 0, "a_pos"); gl.linkProgram(p);
-    if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(p));
-    prog[nom] = p; unif[nom] = {};
-    const n = gl.getProgramParameter(p, gl.ACTIVE_UNIFORMS);
-    for (let i = 0; i < n; i++) { const u = gl.getActiveUniform(p, i).name; unif[nom][u] = gl.getUniformLocation(p, u); }
-  }
-  function texture(taille, repete) {
-    const t = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, t);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, taille, taille, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-    const w = repete ? gl.REPEAT : gl.CLAMP_TO_EDGE;
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, w); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, w);
-    const f = gl.createFramebuffer(); gl.bindFramebuffer(gl.FRAMEBUFFER, f);
-    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, t, 0);
-    if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE) throw new Error("framebuffer incomplet");
-    return [t, f];
-  }
-  function initialiser() {
-    prog = {};
-    programme("pas", FS_PAS); programme("compte", FS_COMPTE); programme("affiche", FS_AFFICHE);
-    quad = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, quad);
-    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, -1, 1, 1, -1, 1, 1]), gl.STATIC_DRAW);
-    gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
-    [tex[0], fb[0]] = texture(N, true); [tex[1], fb[1]] = texture(N, true); [texR, fbR] = texture(R, false);
-    gl.activeTexture(gl.TEXTURE0); gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1); gl.pixelStorei(gl.PACK_ALIGNMENT, 1);
-    cur = 0; effacer();
-  }
-  const m = v => ((v % N) + N) % N;
-  let sale = true, dernierCompte = -1e9, cache = { population: 0, bornes: null };
-  const bufCompte = new Uint8Array(R * R * 4), un = new Uint8Array(4);
-
-  function effacer() {
-    gl.clearColor(0, 0, 0, 1);
-    for (const f of fb) { gl.bindFramebuffer(gl.FRAMEBUFFER, f); gl.clear(gl.COLOR_BUFFER_BIT); }
-    sale = true;
-  }
-  // Decoupe un rectangle du tore en au plus 4 rectangles qui ne traversent pas les bords.
-  function morceaux(x0, y0, l, h) {
-    const tx = m(x0), ty = m(y0), l1 = Math.min(l, N - tx), h1 = Math.min(h, N - ty), res = [];
-    for (const [ax, al, dx] of [[tx, l1, 0], [0, l - l1, l1]]) if (al > 0)
-      for (const [ay, ah, dy] of [[ty, h1, 0], [0, h - h1, h1]]) if (ah > 0) res.push([ax, ay, al, ah, dx, dy]);
-    return res;
-  }
-  function ecrire(x, y, l, h, donnees) {
-    gl.bindTexture(gl.TEXTURE_2D, tex[cur]);
-    gl.texSubImage2D(gl.TEXTURE_2D, 0, x, y, l, h, gl.RGBA, gl.UNSIGNED_BYTE, donnees);
-    sale = true;
-  }
-  function lireZone(x, y, l, h) {
-    const d = new Uint8Array(l * h * 4);
-    gl.bindFramebuffer(gl.FRAMEBUFFER, fb[cur]); gl.readPixels(x, y, l, h, gl.RGBA, gl.UNSIGNED_BYTE, d);
-    return d;
-  }
-  function dessinerDans(nom, cible, taille) {
-    gl.bindFramebuffer(gl.FRAMEBUFFER, cible); gl.viewport(0, 0, taille[0], taille[1]);
-    gl.useProgram(prog[nom]); gl.bindTexture(gl.TEXTURE_2D, tex[cur]);
-    gl.uniform1i(unif[nom].u_etat, 0); gl.uniform1f(unif[nom].u_n, N);
-  }
-
-  const moteur = {
-    gpu: true, nom: `GPU · ${N} × ${N}`, taille: N, limiteHasard: N, perdu: false, surRestauration: null,
-    zoomMin: (l, h) => Math.max(l, h) / N,
-    normaliser: v => m(v),
-    redimensionner() {},
-    avancer() {
-      dessinerDans("pas", fb[1 - cur], [N, N]);
-      gl.drawArrays(gl.TRIANGLES, 0, 6);
-      cur = 1 - cur; sale = true;
-    },
-    lire(x, y) {
-      gl.bindFramebuffer(gl.FRAMEBUFFER, fb[cur]); gl.readPixels(m(x), m(y), 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, un);
-      return un[0] > 127;
-    },
-    marquer(x, y, v) { ecrire(m(x), m(y), 1, 1, new Uint8Array([v ? 255 : 0, 0, 0, 255])); },
-    poser(cellules, x0, y0) {
-      let l = 0, h = 0;
-      for (const [x, y] of cellules) { if (x >= l) l = x + 1; if (y >= h) h = y + 1; }
-      if (l > N || h > N) return false;
-      const masque = new Uint8Array(l * h);
-      for (const [x, y] of cellules) masque[y * l + x] = 1;
-      for (const [ax, ay, al, ah, dx, dy] of morceaux(x0, y0, l, h)) {
-        const d = lireZone(ax, ay, al, ah);
-        for (let j = 0; j < ah; j++) for (let i = 0; i < al; i++)
-          if (masque[(dy + j) * l + dx + i]) d[(j * al + i) * 4] = 255;
-        ecrire(ax, ay, al, ah, d);
+    const g = k => tuiles.get(k) || VIDE, suivantes = new Map();
+    for (const k of candidates) {
+      if (!dansMonde(cleX(k), cleY(k))) continue;
+      const c = g(k), su = g(k + 1), w = g(k - SPAN), e = g(k + SPAN), sw = g(k - SPAN + 1), se = g(k + SPAN + 1);
+      const no = g(k - 1), nw = g(k - SPAN - 1), ne = g(k + SPAN - 1);
+      const r = nouvelle();
+      let tout = 0;
+      let ac = no[T - 1], aw = nw[T - 1], ae = ne[T - 1];   // ligne du dessus
+      let mc = c[0], mw = w[0], me = e[0];                  // ligne courante
+      for (let j = 0; j < T; j++) {
+        let bc, bw, be;                                     // ligne du dessous
+        if (j < T - 1) { bc = c[j + 1]; bw = w[j + 1]; be = e[j + 1]; } else { bc = su[0]; bw = sw[0]; be = se[0]; }
+        const a1 = (ac << 1) | (aw >>> 31), a3 = (ac >>> 1) | (ae << 31);
+        const m1 = (mc << 1) | (mw >>> 31), m3 = (mc >>> 1) | (me << 31);
+        const b1 = (bc << 1) | (bw >>> 31), b3 = (bc >>> 1) | (be << 31);
+        const xa = a1 ^ ac, sa = xa ^ a3, ca = (a1 & ac) | (xa & a3);   // 3 voisines du dessus
+        const sm = m1 ^ m3, cm = m1 & m3;                                // 2 voisines de cote
+        const xb = b1 ^ bc, sb = xb ^ b3, cb = (b1 & bc) | (xb & b3);   // 3 voisines du dessous
+        const xs = sa ^ sm, un = xs ^ sb, k1 = (sa & sm) | (xs & sb);
+        const deux = ca ^ cm ^ cb ^ k1;
+        const plus = (ca & cm) | (ca & cb) | (ca & k1) | (cm & cb) | (cm & k1) | (cb & k1);
+        const v = deux & ~plus & (un | mc);   // 3 voisines, ou 2 voisines et deja vivante
+        r[j] = v; tout |= v;
+        ac = mc; aw = mw; ae = me; mc = bc; mw = bw; me = be;
       }
-      return true;
+      if (tout) suivantes.set(k, r); else reserve.push(r);
+    }
+    for (const t of tuiles.values()) reserve.push(t);
+    tuiles = suivantes; version++;
+  }
+
+  function marquer(x, y, v) {
+    const tx = Math.floor(x / T), ty = Math.floor(y / T);
+    if (!dansMonde(tx, ty)) return;
+    const k = cle(tx, ty), bit = 1 << (x - tx * T), j = y - ty * T;
+    let t = tuiles.get(k);
+    if (v) {
+      if (!t) { t = nouvelle(); t.fill(0); tuiles.set(k, t); }
+      t[j] |= bit;
+    } else if (t) {
+      t[j] &= ~bit;
+      if (t.every(r => r === 0)) { tuiles.delete(k); reserve.push(t); }
+    }
+    version++;
+  }
+  function effacer() { tuiles = new Map(); reserve = []; version++; }
+
+  // Appelle f(tx, ty, tuile) pour chaque tuile qui touche le rectangle de cellules [x1, x2[ x [y1, y2[.
+  function visiter(x1, y1, x2, y2, f) {
+    const tx1 = Math.floor(x1 / T), tx2 = Math.floor((x2 - 1) / T), ty1 = Math.floor(y1 / T), ty2 = Math.floor((y2 - 1) / T);
+    if ((tx2 - tx1 + 1) * (ty2 - ty1 + 1) <= tuiles.size) {
+      for (let tx = tx1; tx <= tx2; tx++) for (let ty = ty1; ty <= ty2; ty++) {
+        if (!dansMonde(tx, ty)) continue;
+        const t = tuiles.get(cle(tx, ty)); if (t) f(tx, ty, t);
+      }
+    } else for (const [k, t] of tuiles) {
+      const tx = cleX(k), ty = cleY(k);
+      if (tx >= tx1 && tx <= tx2 && ty >= ty1 && ty <= ty2) f(tx, ty, t);
+    }
+  }
+
+  // Affichage : on remplit une image (une case = un pixel, ou un pixel de l'ecran
+  // si on est tres dezoome), puis on l'agrandit sans lissage.
+  const vers32 = h => { const [r, g, b] = hexVersVec(h).map(c => Math.round(c * 255)); return ((255 << 24) | (b << 16) | (g << 8) | r) >>> 0; };
+  const FOND = vers32(C_FOND), CELL = vers32(C_CELLULE);
+  const tampon = document.createElement("canvas"), tctx = tampon.getContext("2d");
+  let image = null, pixels = null, derniereVue = "";
+  function preparer(l, h) {
+    if (!image || image.width !== l || image.height !== h) { image = new ImageData(l, h); pixels = new Uint32Array(image.data.buffer); }
+    pixels.fill(FOND);
+  }
+
+  let cache = { population: 0 }, versionCompte = -1, dernierCompte = -1e9;
+  const moteur = {
+    nom: "infinite grid", limiteHasard: 2048,
+    redimensionner(dpr) { ctx.setTransform(dpr, 0, 0, dpr, 0, 0); derniereVue = ""; },
+    avancer,
+    lire(x, y) {
+      const tx = Math.floor(x / T), ty = Math.floor(y / T);
+      if (!dansMonde(tx, ty)) return false;
+      const t = tuiles.get(cle(tx, ty));
+      return !!t && ((t[y - ty * T] >>> (x - tx * T)) & 1) === 1;
     },
+    marquer,
+    poser(cellules, x0, y0) { for (const [x, y] of cellules) marquer(x0 + x, y0 + y, true); return true; },
     effacer,
     remplir(x0, y0, l, h, densite) {
       effacer();
-      for (const [ax, ay, al, ah] of morceaux(x0, y0, Math.min(l, N), Math.min(h, N))) {
-        const d = new Uint8Array(al * ah * 4);
-        for (let i = 0; i < al * ah; i++) { d[i * 4] = Math.random() < densite ? 255 : 0; d[i * 4 + 3] = 255; }
-        ecrire(ax, ay, al, ah, d);
-      }
+      for (let y = 0; y < h; y++) for (let x = 0; x < l; x++) if (Math.random() < densite) marquer(x0 + x, y0 + y, true);
     },
-    // Population et zone occupee : la carte graphique compte les cellules par blocs
-    // de 16 x 16, on ne relit que ce petit resume (au plus ~3 fois par seconde).
+    // Population, recalculee au plus ~3 fois par seconde.
     statistiques(force) {
       const t = performance.now();
-      if (!force && (!sale || t - dernierCompte < 300)) return cache;
-      dessinerDans("compte", fbR, [R, R]);
-      gl.drawArrays(gl.TRIANGLES, 0, 6);
-      gl.readPixels(0, 0, R, R, gl.RGBA, gl.UNSIGNED_BYTE, bufCompte);
+      if (!force && (versionCompte === version || t - dernierCompte < 300)) return cache;
       let pop = 0;
-      const colonnes = new Uint8Array(R), rangees = new Uint8Array(R);
-      for (let by = 0; by < R; by++) for (let bx = 0; bx < R; bx++) {
-        const k = (by * R + bx) * 4, n = bufCompte[k] + 256 * bufCompte[k + 1];
-        if (!n) continue;
-        pop += n; colonnes[bx] = 1; rangees[by] = 1;
-      }
-      // Zone occupee sur un tore : on cherche le plus grand vide (qui peut
-      // traverser le bord) et on garde le reste.
-      const etendue = occ => {
-        let meilleur = 0, fin = -1, run = 0;
-        for (let i = 0; i < 2 * R; i++) {
-          if (occ[i % R]) run = 0; else if (++run > meilleur) { meilleur = run; fin = i; }
-        }
-        meilleur = Math.min(meilleur, R);
-        const debut = meilleur ? (fin + 1) % R : 0;
-        return [debut * BLOC, (debut + R - meilleur) * BLOC - 1];
-      };
-      let bornes = null;
-      if (pop) { const [x1, x2] = etendue(colonnes), [y1, y2] = etendue(rangees); bornes = [x1, y1, x2, y2]; }
-      cache = { population: pop, bornes };
-      sale = false; dernierCompte = t;
+      for (const tu of tuiles.values()) for (let j = 0; j < T; j++) if (tu[j]) pop += popcount(tu[j]);
+      cache = { population: pop }; versionCompte = version; dernierCompte = t;
       return cache;
     },
-    bornes() { return moteur.statistiques(true).bornes; },
-    dessiner(v) {
-      dessinerDans("affiche", null, [toile.width, toile.height]);
-      const u = unif.affiche;
-      gl.uniform2f(u.u_o, v.ox, v.oy); gl.uniform1f(u.u_echelle, v.echelle); gl.uniform1f(u.u_dpr, v.dpr);
-      gl.uniform1f(u.u_h, toile.height); gl.uniform1f(u.u_grille, v.echelle >= 6 ? 1 : 0);
-      gl.uniform3fv(u.u_fond, hexVersVec(C_FOND)); gl.uniform3fv(u.u_trait, hexVersVec(C_TRAIT)); gl.uniform3fv(u.u_cell, hexVersVec(C_CELLULE));
-      gl.drawArrays(gl.TRIANGLES, 0, 6);
-    },
-  };
-
-  // Le telephone peut liberer la memoire graphique (mise en veille, changement d'appli).
-  toile.addEventListener("webglcontextlost", e => { e.preventDefault(); moteur.perdu = true; });
-  toile.addEventListener("webglcontextrestored", () => {
-    initialiser(); moteur.perdu = false;
-    if (moteur.surRestauration) moteur.surRestauration();
-  });
-
-  initialiser();
-  return moteur;
-}
-
-// ======================================= Moteur de secours (processeur)
-// Utilise seulement si WebGL est indisponible : grille infinie, on ne stocke
-// que les cellules vivantes.
-function creerMoteurCPU(toile) {
-  const ctx = toile.getContext("2d");
-  const DEMI = 32768, COTE = 65536;
-  const cle = (x, y) => (x + DEMI) * COTE + (y + DEMI);
-  const cleX = k => Math.floor(k / COTE) - DEMI, cleY = k => (k % COTE) - DEMI;
-  const dans = (x, y) => x >= -DEMI && x < DEMI && y >= -DEMI && y < DEMI;
-  let vivantes = new Set();
-  function suivante(actuelles) {
-    const voisines = new Map();
-    for (const k of actuelles) {
-      const x = cleX(k), y = cleY(k);
-      for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) {
-        if ((!dx && !dy) || !dans(x + dx, y + dy)) continue;
-        const nk = cle(x + dx, y + dy);
-        voisines.set(nk, (voisines.get(nk) || 0) + 1);
-      }
-    }
-    const res = new Set();
-    for (const [k, n] of voisines) if (n === 3 || (n === 2 && actuelles.has(k))) res.add(k);
-    return res;
-  }
-  return {
-    gpu: false, nom: "CPU", taille: Infinity, limiteHasard: 140, perdu: false,
-    zoomMin: () => 1,
-    normaliser: v => v,
-    redimensionner(dpr) { ctx.setTransform(dpr, 0, 0, dpr, 0, 0); },
-    avancer() { vivantes = suivante(vivantes); },
-    lire: (x, y) => vivantes.has(cle(x, y)),
-    marquer(x, y, v) { if (!dans(x, y)) return; if (v) vivantes.add(cle(x, y)); else vivantes.delete(cle(x, y)); },
-    poser(cellules, x0, y0) { for (const [x, y] of cellules) if (dans(x0 + x, y0 + y)) vivantes.add(cle(x0 + x, y0 + y)); return true; },
-    effacer() { vivantes = new Set(); },
-    remplir(x0, y0, l, h, densite) {
-      vivantes = new Set();
-      for (let x = 0; x < l; x++) for (let y = 0; y < h; y++) if (Math.random() < densite && dans(x0 + x, y0 + y)) vivantes.add(cle(x0 + x, y0 + y));
-    },
-    statistiques() { return { population: vivantes.size }; },
     bornes() {
-      if (!vivantes.size) return null;
+      if (!tuiles.size) return null;
       let x1 = Infinity, y1 = Infinity, x2 = -Infinity, y2 = -Infinity;
-      for (const k of vivantes) { const x = cleX(k), y = cleY(k); if (x < x1) x1 = x; if (x > x2) x2 = x; if (y < y1) y1 = y; if (y > y2) y2 = y; }
+      for (const [k, t] of tuiles) {
+        const bx = cleX(k) * T, by = cleY(k) * T;
+        let ou = 0, j1 = -1, j2 = -1;
+        for (let j = 0; j < T; j++) if (t[j]) { ou |= t[j]; if (j1 < 0) j1 = j; j2 = j; }
+        x1 = Math.min(x1, bx + 31 - Math.clz32(ou & -ou)); x2 = Math.max(x2, bx + 31 - Math.clz32(ou));
+        y1 = Math.min(y1, by + j1); y2 = Math.max(y2, by + j2);
+      }
       return [x1, y1, x2, y2];
     },
     dessiner(v) {
-      ctx.fillStyle = C_FOND; ctx.fillRect(0, 0, v.largeur, v.hauteur);
-      const grille = v.echelle >= 6;
-      if (grille) {
-        ctx.fillStyle = C_TRAIT;
-        for (let x = Math.floor(v.ox); x <= v.ox + v.largeur / v.echelle; x++) ctx.fillRect(Math.floor((x - v.ox) * v.echelle), 0, 1, v.hauteur);
-        for (let y = Math.floor(v.oy); y <= v.oy + v.hauteur / v.echelle; y++) ctx.fillRect(0, Math.floor((y - v.oy) * v.echelle), v.largeur, 1);
-      }
-      const marge = grille ? 1 : 0, cote = Math.max(1, Math.ceil(v.echelle) - marge);
-      ctx.fillStyle = C_CELLULE;
-      for (const k of vivantes) {
-        const sx = (cleX(k) - v.ox) * v.echelle, sy = (cleY(k) - v.oy) * v.echelle;
-        if (sx < -v.echelle || sy < -v.echelle || sx > v.largeur || sy > v.hauteur) continue;
-        ctx.fillRect(Math.floor(sx) + marge, Math.floor(sy) + marge, cote, cote);
+      const vueCle = `${v.ox},${v.oy},${v.echelle},${v.largeur},${v.hauteur},${v.dpr},${version}`;
+      if (vueCle === derniereVue) return;          // rien n'a change depuis la derniere image
+      derniereVue = vueCle;
+      const k = v.echelle * v.dpr;                 // pixels de l'ecran par cellule
+      const xFin = v.ox + v.largeur / v.echelle, yFin = v.oy + v.hauteur / v.echelle;
+      if (k >= 1) {
+        // Une cellule = un pixel de l'image, agrandie ensuite.
+        const cx0 = Math.floor(v.ox), cy0 = Math.floor(v.oy);
+        const bw = Math.ceil(xFin) - cx0 + 1, bh = Math.ceil(yFin) - cy0 + 1;
+        preparer(bw, bh);
+        visiter(cx0, cy0, cx0 + bw, cy0 + bh, (tx, ty, t) => {
+          const bx = tx * T - cx0, by = ty * T - cy0;
+          for (let j = 0; j < T; j++) {
+            let w = t[j]; const py = by + j;
+            if (!w || py < 0 || py >= bh) continue;
+            while (w) {
+              const px = bx + 31 - Math.clz32(w & -w); w &= w - 1;
+              if (px >= 0 && px < bw) pixels[py * bw + px] = CELL;
+            }
+          }
+        });
+        if (tampon.width !== bw || tampon.height !== bh) { tampon.width = bw; tampon.height = bh; }
+        tctx.putImageData(image, 0, 0);
+        ctx.imageSmoothingEnabled = false;
+        ctx.drawImage(tampon, (cx0 - v.ox) * v.echelle, (cy0 - v.oy) * v.echelle, bw * v.echelle, bh * v.echelle);
+        if (v.echelle >= 6) {                      // quadrillage
+          ctx.fillStyle = C_TRAIT;
+          for (let x = cx0; x <= xFin; x++) ctx.fillRect(Math.floor((x - v.ox) * v.echelle), 0, 1, v.hauteur);
+          for (let y = cy0; y <= yFin; y++) ctx.fillRect(0, Math.floor((y - v.oy) * v.echelle), v.largeur, 1);
+        }
+      } else {
+        // Tres dezoome : plusieurs cellules par pixel, l'image a la taille de l'ecran.
+        const bw = toile.width, bh = toile.height;
+        preparer(bw, bh);
+        const point = (x, y) => {
+          const px = Math.floor((x - v.ox) * k), py = Math.floor((y - v.oy) * k);
+          if (px >= 0 && px < bw && py >= 0 && py < bh) pixels[py * bw + px] = CELL;
+        };
+        visiter(Math.floor(v.ox), Math.floor(v.oy), Math.ceil(xFin) + 1, Math.ceil(yFin) + 1, (tx, ty, t) => {
+          if (T * k <= 1) { point(tx * T + T / 2, ty * T + T / 2); return; }   // la tuile tient dans un pixel
+          for (let j = 0; j < T; j++) {
+            let w = t[j];
+            while (w) { const b = 31 - Math.clz32(w & -w); w &= w - 1; point(tx * T + b, ty * T + j); }
+          }
+        });
+        ctx.putImageData(image, 0, 0);
       }
     },
   };
+  return moteur;
 }
 
 // ============================================================ Application
 const $ = id => document.getElementById(id);
 const culture = $("culture");
-let toile = $("toile"), moteur = null;
-try { moteur = creerMoteurGPU(toile); } catch (e) { moteur = null; }
-if (!moteur) {                         // la toile WebGL ne peut pas devenir 2D : on la remplace
-  const t = toile.cloneNode(false); toile.replaceWith(t); toile = t;
-  moteur = creerMoteurCPU(toile);
-}
+const toile = $("toile"), moteur = creerMoteur(toile);
 $("moteurNom").textContent = moteur.nom;
 
 const ZOOM_MAX = 48;
@@ -505,7 +420,7 @@ let pret = false, generation = 0;
 let enCours = true, vitesse = 12, cumul = 0, dernier = 0;
 let outil = "main", enAttente = null;   // motif a poser au prochain toucher
 
-const zoomMin = () => Math.max(0.05, moteur.zoomMin(vue.largeur, vue.hauteur));
+const zoomMin = () => 0.01;
 function zoomer(px, py, facteur) {
   const wx = px / vue.echelle + vue.ox, wy = py / vue.echelle + vue.oy;
   vue.echelle = Math.min(ZOOM_MAX, Math.max(zoomMin(), vue.echelle * facteur));
@@ -522,28 +437,22 @@ function cadrer() {
 function poserCentre(cellules, cx, cy) {
   let l = 0, h = 0;
   for (const [x, y] of cellules) { if (x >= l) l = x + 1; if (y >= h) h = y + 1; }
-  const ok = moteur.poser(cellules, Math.round(cx - l / 2), Math.round(cy - h / 2));
-  if (!ok) annoncer(`Pattern too large for this universe (${moteur.taille} × ${moteur.taille})`);
-  return ok;
+  return moteur.poser(cellules, Math.round(cx - l / 2), Math.round(cy - h / 2));
 }
 function avancer() { moteur.avancer(); generation++; }
 
 function boucle(t) {
   const dt = Math.min(0.1, (t - dernier) / 1000); dernier = t;
-  if (enCours && !moteur.perdu && !document.hidden) {
+  if (enCours && !document.hidden) {
     cumul += dt;
-    const debut = performance.now(), limite = moteur.gpu ? (dt > 0.045 ? 1 : 8) : Infinity;
-    let n = 0;
+    const debut = performance.now();
     while (cumul >= 1 / vitesse) {
-      avancer(); cumul -= 1 / vitesse; n++;
-      if (n >= limite || performance.now() - debut > 30) { cumul = 0; break; }   // appareil sature : on ralentit
+      avancer(); cumul -= 1 / vitesse;
+      if (performance.now() - debut > 30) { cumul = 0; break; }   // appareil sature : on ralentit
     }
   } else cumul = 0;
-  if (!moteur.perdu) {
-    vue.ox = moteur.normaliser(vue.ox); vue.oy = moteur.normaliser(vue.oy);
-    moteur.dessiner(vue);
-    $("pop").textContent = moteur.statistiques(false).population.toLocaleString("en-US");
-  }
+  moteur.dessiner(vue);
+  $("pop").textContent = moteur.statistiques(false).population.toLocaleString("en-US");
   $("gen").textContent = generation.toLocaleString("en-US");
   requestAnimationFrame(boucle);
 }
@@ -560,6 +469,7 @@ function redimensionner() {
     vue.echelle = Math.max(vue.echelle, zoomMin());
     vue.ox = cx - vue.largeur / vue.echelle / 2; vue.oy = cy - vue.hauteur / vue.echelle / 2;
   }
+  moteur.dessiner(vue);              // changer la taille de la toile l'efface : on redessine tout de suite
 }
 
 // ------------------------------------------------------------ Commandes
@@ -708,7 +618,6 @@ window.addEventListener("keydown", e => {
 
 // ---------------------------------------------------------------- Depart
 function demarrer() { moteur.effacer(); generation = 0; reglerLecture(false); }   // grille vide au lancement
-moteur.surRestauration = () => { demarrer(); annoncer("Simulation restarted after sleep mode", 4000); };
 reglerOutil("main");
 demarrer();
 new ResizeObserver(redimensionner).observe(culture);
